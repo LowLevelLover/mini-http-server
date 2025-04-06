@@ -82,6 +82,27 @@ class HttpRequest:
 
         return cls(req_line, headers, last)
 
+def echo_handler(text: str):
+    headers = HttpHeaders(
+        {"Content-Type": "text/plain", "Content-Length": str(len(text))}
+    )
+    return b"\r\n".join(
+        [b"HTTP/1.1 200 OK", headers.to_bytes(), text.encode("utf-8")]
+    )
+
+def user_agent_handler(req: HttpRequest):
+    user_agent = req.headers.get("User-Agent")
+    if user_agent is None:
+        raise LookupError("User-Agent is not in headers")
+
+    headers = HttpHeaders(
+        {"Content-Type": "text/plain", "Content-Length": str(len(user_agent))}
+    )
+
+    return b"\r\n".join(
+        [b"HTTP/1.1 200 OK", headers.to_bytes(), user_agent.encode("utf-8")]
+    )
+
 
 def main():
     server_socket = socket.create_server(("localhost", 4221), reuse_port=True)
@@ -91,17 +112,16 @@ def main():
 
     http_request = HttpRequest.from_str(req)
 
-    match http_request.req_line.path.split("/"):
-        case ["", ""]:
+    match http_request.req_line.path.split("/")[1:]:
+        case [""]:
             client.sendall(RESP_200)
-        case ["", "echo", text]:
-            headers = HttpHeaders(
-                {"Content-Type": "text/plain", "Content-Length": str(len(text))}
-            )
-            result = b"\r\n".join(
-                [b"HTTP/1.1 200 OK", headers.to_bytes(), text.encode("utf-8")]
-            )
-            client.sendall(result)
+
+        case ["echo", text]:
+            client.sendall(echo_handler(text))
+
+        case ["user-agent"]:
+            client.sendall(user_agent_handler(http_request))
+
         case _:
             client.sendall(RESP_404)
 
