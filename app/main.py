@@ -1,4 +1,5 @@
 import asyncio
+from pathlib import Path
 import socket
 import logging
 
@@ -7,10 +8,12 @@ import sys
 from typing import Self, override
 
 BUFF_SIZE = 1024
-RESP_404 = b"HTTP/1.1 404 Not Found\r\n\r\n"
-RESP_200 = b"HTTP/1.1 200 OK\r\n\r\n"
 HOST = "localhost"
 PORT = 4221
+
+RESP_404 = b"HTTP/1.1 404 Not Found\r\n\r\n"
+RESP_200 = b"HTTP/1.1 200 OK\r\n\r\n"
+RESP_201 = b"HTTP/1.1 201 Created\r\n\r\n"
 
 # Initialize Logger
 logging.basicConfig(
@@ -51,9 +54,10 @@ class HttpReqLine:
 
 class HttpHeaders(UserDict[str, str]):
     @classmethod
-    def from_list(cls, headers_raw: list[str]) -> Self:
+    def from_list(cls, headers_raw: list[bytes]) -> Self:
         headers: dict[str, str] = {}
         for header in headers_raw:
+            header = header.decode("utf-8")
             if ":" not in header:
                 continue
             key, value = header.split(":", 1)
@@ -75,10 +79,10 @@ class HttpRequest:
 
     req_line: HttpReqLine
     headers: HttpHeaders
-    body: str | None
+    body: bytes | None
 
     def __init__(
-        self, req_line: HttpReqLine, headers: HttpHeaders, body: str | None = None
+        self, req_line: HttpReqLine, headers: HttpHeaders, body: bytes | None = None
     ) -> None:
         if body is not None and len(body.strip()) == 0:
             body = None
@@ -88,10 +92,10 @@ class HttpRequest:
         self.body = body
 
     @classmethod
-    def from_str(cls, text: str) -> Self:
+    def from_str(cls, text: bytes) -> Self:
         [first, *second, last] = text.splitlines()
 
-        req_line = HttpReqLine.from_str(first)
+        req_line = HttpReqLine.from_str(first.decode("utf-8"))
         headers = HttpHeaders.from_list(second)
 
         return cls(req_line, headers, last)
@@ -118,7 +122,7 @@ def user_agent_handler(req: HttpRequest):
     )
 
 
-def files_handler(file_name: str):
+def files_get_handler(file_name: str):
     directory = get_directory()
     if directory is None:
         return RESP_404
@@ -139,6 +143,18 @@ def files_handler(file_name: str):
         return RESP_404
 
 
+def files_post_handler(file_name: str, content: bytes):
+    directory = get_directory()
+    if directory is None:
+        raise ValueError("The directory of files path is not provided")
+
+    Path(directory).mkdir(parents=True, exist_ok=True)
+
+    with open(directory + file_name, "wb") as f:
+        _ = f.write(content)
+        return RESP_201
+
+
 async def handle_client(client: socket.socket, loop: asyncio.AbstractEventLoop):
     addr: tuple[str, int] = client.getpeername()  # (address, port) for AF_INET
     logger.info(f"[CONNECTED] {addr[0]}:{addr[1]}")
@@ -149,7 +165,6 @@ async def handle_client(client: socket.socket, loop: asyncio.AbstractEventLoop):
             if not req:
                 break
 
-            req = req.decode()
             logger.info(f"[RECEIVED from {addr[0]}:{addr[1]}] {req!r}")
 
             http_request = HttpRequest.from_str(req)
@@ -164,8 +179,13 @@ async def handle_client(client: socket.socket, loop: asyncio.AbstractEventLoop):
                 case ["user-agent"]:
                     await loop.sock_sendall(client, user_agent_handler(http_request))
 
-                case ["files", file_name]:
-                    await loop.sock_sendall(client, files_handler(file_name))
+                case ["files", file_name] if http_request.req_line.method == "GET":
+                    await loop.sock_sendall(client, files_get_handler(file_name))
+
+                case ["files", file_name] if http_request.req_line.method == "POST":
+                    await loop.sock_sendall(
+                        client, files_post_handler(file_name, http_request.body or b"")
+                    )
 
                 case _:
                     await loop.sock_sendall(client, RESP_404)
