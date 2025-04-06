@@ -3,6 +3,7 @@ import socket
 import logging
 
 from collections import UserDict
+import sys
 from typing import Self, override
 
 BUFF_SIZE = 1024
@@ -117,6 +118,27 @@ def user_agent_handler(req: HttpRequest):
     )
 
 
+def files_handler(file_name: str):
+    directory = get_directory()
+    if directory is None:
+        return RESP_404
+
+    try:
+        with open(directory + file_name, "rb") as f:
+            content = f.read()
+            headers = HttpHeaders(
+                {
+                    "Content-Type": "application/octet-stream",
+                    "Content-Length": str(len(content)),
+                }
+            )
+
+            return b"\r\n".join([b"HTTP/1.1 200 OK", headers.to_bytes(), content])
+
+    except FileNotFoundError:
+        return RESP_404
+
+
 async def handle_client(client: socket.socket, loop: asyncio.AbstractEventLoop):
     addr: tuple[str, int] = client.getpeername()  # (address, port) for AF_INET
     logger.info(f"[CONNECTED] {addr[0]}:{addr[1]}")
@@ -142,14 +164,23 @@ async def handle_client(client: socket.socket, loop: asyncio.AbstractEventLoop):
                 case ["user-agent"]:
                     await loop.sock_sendall(client, user_agent_handler(http_request))
 
+                case ["files", file_name]:
+                    await loop.sock_sendall(client, files_handler(file_name))
+
                 case _:
                     await loop.sock_sendall(client, RESP_404)
+
     except Exception as e:
         logger.exception(f"[ERROR] {e}")
 
     finally:
         logger.info(f"[DISCONNECTED] {addr[0]}:{addr[1]}")
         client.close()
+
+
+def get_directory():
+    if len(sys.argv) == 3 and sys.argv[1] == "--directory":
+        return sys.argv[2]
 
 
 async def main():
