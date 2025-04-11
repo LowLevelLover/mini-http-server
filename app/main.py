@@ -1,4 +1,5 @@
 import asyncio
+import gzip
 from pathlib import Path
 import socket
 import logging
@@ -17,7 +18,7 @@ RESP_201 = b"HTTP/1.1 201 Created\r\n\r\n"
 
 # Initialize Logger
 logging.basicConfig(
-    level=logging.INFO,  # Change to DEBUG for more details
+    level=logging.INFO,
     format="%(asctime)s %(message)s",
     handlers=[logging.StreamHandler()],
 )
@@ -100,12 +101,53 @@ class HttpRequest:
 
         return cls(req_line, headers, last)
 
+    @override
+    def __repr__(self) -> str:
+        return f"{self.__class__.__name__}(req_line={self.req_line!r}, headers={self.headers!r}, body={self.body!r})"
 
-def echo_handler(text: str):
+
+class HttpResponse:
+    __slots__: list[str] = ["status", "headers", "body"]
+
+    status: str
+    headers: HttpHeaders
+    body: bytes
+
+    def __init__(
+        self,
+        status: str,
+        headers: HttpHeaders,
+        body: bytes | None = None,
+        compression: str | None = None,
+    ) -> None:
+        self.status = status
+        self.headers = headers
+
+        if compression is not None and "gzip" in compression:
+            self.body = gzip.compress(body or b"")
+            self.headers["Content-Length"] = str(len(self.body))
+            self.headers["Content-Encoding"] = "gzip"
+        else:
+            self.body = body or b""
+            self.headers["Content-Length"] = str(len(self.body))
+
+    def to_bytes(self):
+        status_line = f"HTTP/1.1 {self.status}".encode("utf-8")
+        return b"\r\n".join([status_line, self.headers.to_bytes(), self.body])
+
+    @override
+    def __repr__(self) -> str:
+        return f"{self.__class__.__name__}(status={self.status!r}, headers={self.headers!r}, body={self.body!r})"
+
+
+def echo_handler(text: bytes, req_headers: HttpHeaders) -> bytes:
     headers = HttpHeaders(
         {"Content-Type": "text/plain", "Content-Length": str(len(text))}
     )
-    return b"\r\n".join([b"HTTP/1.1 200 OK", headers.to_bytes(), text.encode("utf-8")])
+    resp = HttpResponse(
+        "200 OK", headers, body=text, compression=req_headers.get("Accept-Encoding")
+    )
+    return resp.to_bytes()
 
 
 def user_agent_handler(req: HttpRequest):
@@ -117,12 +159,11 @@ def user_agent_handler(req: HttpRequest):
         {"Content-Type": "text/plain", "Content-Length": str(len(user_agent))}
     )
 
-    return b"\r\n".join(
-        [b"HTTP/1.1 200 OK", headers.to_bytes(), user_agent.encode("utf-8")]
-    )
+    resp = HttpResponse("200 OK", headers, user_agent.encode("utf-8"))
+    return resp.to_bytes()
 
 
-def files_get_handler(file_name: str):
+def files_get_handler(file_name: str, req_headers: HttpHeaders):
     directory = get_directory()
     if directory is None:
         return RESP_404
@@ -137,7 +178,13 @@ def files_get_handler(file_name: str):
                 }
             )
 
-            return b"\r\n".join([b"HTTP/1.1 200 OK", headers.to_bytes(), content])
+            resp = HttpResponse(
+                "200 OK",
+                headers,
+                body=content,
+                compression=req_headers.get("Accept-Encoding"),
+            )
+            return resp.to_bytes()
 
     except FileNotFoundError:
         return RESP_404
@@ -174,13 +221,17 @@ async def handle_client(client: socket.socket, loop: asyncio.AbstractEventLoop):
                     await loop.sock_sendall(client, RESP_200)
 
                 case ["echo", text]:
-                    await loop.sock_sendall(client, echo_handler(text))
+                    await loop.sock_sendall(
+                        client, echo_handler(text.encode("utf-8"), http_request.headers)
+                    )
 
                 case ["user-agent"]:
                     await loop.sock_sendall(client, user_agent_handler(http_request))
 
                 case ["files", file_name] if http_request.req_line.method == "GET":
-                    await loop.sock_sendall(client, files_get_handler(file_name))
+                    await loop.sock_sendall(
+                        client, files_get_handler(file_name, http_request.headers)
+                    )
 
                 case ["files", file_name] if http_request.req_line.method == "POST":
                     await loop.sock_sendall(
