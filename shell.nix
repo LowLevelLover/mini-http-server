@@ -1,8 +1,9 @@
 { pkgs ? import <nixpkgs> {} }:
 pkgs.mkShell {
-  buildInputs = [
-    pkgs.python39        # or whichever python version you are using
-    pkgs.pipenv
+  buildInputs = with pkgs; [
+    python39        # or whichever python version you are using
+    pipenv
+    gzip
   ];
 
   # This hook runs every time you enter the nix shell.
