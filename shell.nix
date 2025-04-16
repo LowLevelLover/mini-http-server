@@ -1,7 +1,7 @@
 { pkgs ? import <nixpkgs> {} }:
 pkgs.mkShell {
   buildInputs = with pkgs; [
-    python39        # or whichever python version you are using
+    python312        # or whichever python version you are using
     pipenv
     gzip
   ];

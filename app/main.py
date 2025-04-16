@@ -7,14 +7,12 @@ import logging
 from collections import UserDict
 import sys
 from typing import Self, override
+from http import HTTPStatus
 
 BUFF_SIZE = 1024
 HOST = "localhost"
 PORT = 4221
 
-RESP_404 = b"HTTP/1.1 404 Not Found\r\n\r\n"
-RESP_200 = b"HTTP/1.1 200 OK\r\n\r\n"
-RESP_201 = b"HTTP/1.1 201 Created\r\n\r\n"
 
 # Initialize Logger
 logging.basicConfig(
@@ -109,19 +107,19 @@ class HttpRequest:
 class HttpResponse:
     __slots__: list[str] = ["status", "headers", "body"]
 
-    status: str
+    status: HTTPStatus
     headers: HttpHeaders
     body: bytes
 
     def __init__(
         self,
-        status: str,
-        headers: HttpHeaders,
+        status: HTTPStatus,
+        headers: HttpHeaders | None = None,
         body: bytes | None = None,
         compression: str | None = None,
     ) -> None:
         self.status = status
-        self.headers = headers
+        self.headers = HttpHeaders() if headers is None else headers
 
         if compression is not None and "gzip" in compression:
             self.body = gzip.compress(body or b"")
@@ -132,7 +130,9 @@ class HttpResponse:
             self.headers["Content-Length"] = str(len(self.body))
 
     def to_bytes(self):
-        status_line = f"HTTP/1.1 {self.status}".encode("utf-8")
+        status_line = f"HTTP/1.1 {self.status.numerator} {self.status.phrase}".encode(
+            "utf-8"
+        )
         return b"\r\n".join([status_line, self.headers.to_bytes(), self.body])
 
     @override
@@ -140,17 +140,25 @@ class HttpResponse:
         return f"{self.__class__.__name__}(status={self.status!r}, headers={self.headers!r}, body={self.body!r})"
 
 
-def echo_handler(text: bytes, req_headers: HttpHeaders) -> bytes:
+RESP_404 = HttpResponse(HTTPStatus(404))
+RESP_200 = HttpResponse(HTTPStatus(200))
+RESP_201 = HttpResponse(HTTPStatus(201))
+
+
+def echo_handler(text: bytes, req_headers: HttpHeaders) -> HttpResponse:
     headers = HttpHeaders(
         {"Content-Type": "text/plain", "Content-Length": str(len(text))}
     )
     resp = HttpResponse(
-        "200 OK", headers, body=text, compression=req_headers.get("Accept-Encoding")
+        HTTPStatus(200),
+        headers,
+        body=text,
+        compression=req_headers.get("Accept-Encoding"),
     )
-    return resp.to_bytes()
+    return resp
 
 
-def user_agent_handler(req: HttpRequest):
+def user_agent_handler(req: HttpRequest) -> HttpResponse:
     user_agent = req.headers.get("User-Agent")
     if user_agent is None:
         raise LookupError("User-Agent is not in headers")
@@ -159,8 +167,8 @@ def user_agent_handler(req: HttpRequest):
         {"Content-Type": "text/plain", "Content-Length": str(len(user_agent))}
     )
 
-    resp = HttpResponse("200 OK", headers, user_agent.encode("utf-8"))
-    return resp.to_bytes()
+    resp = HttpResponse(HTTPStatus(200), headers, user_agent.encode("utf-8"))
+    return resp
 
 
 def files_get_handler(file_name: str, req_headers: HttpHeaders):
@@ -179,12 +187,12 @@ def files_get_handler(file_name: str, req_headers: HttpHeaders):
             )
 
             resp = HttpResponse(
-                "200 OK",
+                HTTPStatus(200),
                 headers,
                 body=content,
                 compression=req_headers.get("Accept-Encoding"),
             )
-            return resp.to_bytes()
+            return resp
 
     except FileNotFoundError:
         return RESP_404
@@ -215,36 +223,35 @@ async def handle_client(client: socket.socket, loop: asyncio.AbstractEventLoop):
                 break
 
             http_request = HttpRequest.from_str(req)
+            resp: HttpResponse
 
             match http_request.req_line.path.split("/")[1:]:
                 case [""]:
-                    await loop.sock_sendall(client, RESP_200)
+                    resp = RESP_200
 
                 case ["echo", text]:
-                    await loop.sock_sendall(
-                        client, echo_handler(text.encode("utf-8"), http_request.headers)
-                    )
+                    resp = echo_handler(text.encode("utf-8"), http_request.headers)
 
                 case ["user-agent"]:
-                    await loop.sock_sendall(client, user_agent_handler(http_request))
+                    resp = user_agent_handler(http_request)
 
                 case ["files", file_name] if http_request.req_line.method == "GET":
-                    await loop.sock_sendall(
-                        client, files_get_handler(file_name, http_request.headers)
-                    )
+                    resp = files_get_handler(file_name, http_request.headers)
 
                 case ["files", file_name] if http_request.req_line.method == "POST":
-                    await loop.sock_sendall(
-                        client, files_post_handler(file_name, http_request.body or b"")
-                    )
+                    resp = files_post_handler(file_name, http_request.body or b"")
 
                 case _:
-                    await loop.sock_sendall(client, RESP_404)
+                    resp = RESP_404
 
-            if (
-                http_request.headers.get("Connection") == "close"
-                or http_request.req_line.version != "HTTP/1.1"
-            ):
+            if http_request.headers.get("Connection") == "close":
+                resp.headers["Connection"] = "close"
+                await loop.sock_sendall(client, resp.to_bytes())
+                break
+
+            await loop.sock_sendall(client, resp.to_bytes())
+
+            if http_request.req_line.version != "HTTP/1.1":
                 break
 
     except Exception as e:
