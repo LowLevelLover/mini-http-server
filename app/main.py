@@ -209,10 +209,10 @@ async def handle_client(client: socket.socket, loop: asyncio.AbstractEventLoop):
     try:
         while True:
             req = await loop.sock_recv(client, BUFF_SIZE)
-            if not req:
-                break
-
             logger.info(f"[RECEIVED from {addr[0]}:{addr[1]}] {req!r}")
+
+            if req == b"":
+                break
 
             http_request = HttpRequest.from_str(req)
 
@@ -240,6 +240,12 @@ async def handle_client(client: socket.socket, loop: asyncio.AbstractEventLoop):
 
                 case _:
                     await loop.sock_sendall(client, RESP_404)
+
+            if (
+                http_request.headers.get("Connection") == "close"
+                or http_request.req_line.version != "HTTP/1.1"
+            ):
+                break
 
     except Exception as e:
         logger.exception(f"[ERROR] {e}")
