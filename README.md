@@ -46,7 +46,7 @@ A basic asynchronous HTTP server implemented in Python using the `asyncio` libra
 Run the server using the command below. Optionally, specify a directory for file operations:
 
 ```bash
-python server.py [--directory <path>]
+./your_program.sh [--directory <path>]
 ```
 
 - **Without directory**: The `/files/*` endpoints will return `404` for GET requests and raise an error for POST requests.
@@ -55,7 +55,7 @@ python server.py [--directory <path>]
 Example:
 
 ```bash
-python server.py --directory /tmp/files
+./your_program.sh --directory /tmp/files
 ```
 
 The server listens on `localhost:4221` by default.
